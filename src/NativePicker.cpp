@@ -201,7 +201,24 @@ namespace {
         std::wstring m_windowsPath;
     };
 
-    std::optional<DWORD> runShellCommand(std::wstring const& command) {
+    std::optional<DWORD> readExitCode(std::wstring const& statusPath) {
+        auto const contents = readFile(statusPath);
+        if (!contents || contents->empty()) {
+            return std::nullopt;
+        }
+
+        char* end = nullptr;
+        auto const value = std::strtoul(contents->c_str(), &end, 10);
+        if (end == contents->c_str()) {
+            return std::nullopt;
+        }
+        return static_cast<DWORD>(value);
+    }
+
+    std::optional<DWORD> runShellCommand(
+        std::wstring const& command,
+        std::wstring const& statusPath
+    ) {
         auto commandLine = L"sh -c " + windowsArgumentQuote(command);
 
         STARTUPINFOW startup{};
@@ -225,13 +242,13 @@ namespace {
 
         CloseHandle(process.hThread);
 
-        DWORD exitCode = ERROR_GEN_FAILURE;
-        auto const waitStatus = WaitForSingleObject(process.hProcess, INFINITE);
-        auto const gotExitCode = waitStatus == WAIT_OBJECT_0 &&
-            GetExitCodeProcess(process.hProcess, &exitCode);
-        CloseHandle(process.hProcess);
+        std::optional<DWORD> exitCode;
+        while (!(exitCode = readExitCode(statusPath))) {
+            Sleep(25);
+        }
 
-        return gotExitCode ? std::optional<DWORD>(exitCode) : std::nullopt;
+        CloseHandle(process.hProcess);
+        return exitCode;
     }
 
     std::wstring zenityCommand(gdlinux::PickerRequest const& request) {
@@ -362,12 +379,14 @@ namespace gdlinux {
         }
 
         TemporaryOutputFile output;
+        TemporaryOutputFile status;
         auto command = *backend == Backend::Zenity
             ? zenityCommand(request)
             : kdialogCommand(request);
         command += L" > " + shellQuote(output.unixPath());
+        command += L"; printf '%d\n' $? > " + shellQuote(status.unixPath());
 
-        auto const exitCode = runShellCommand(command);
+        auto const exitCode = runShellCommand(command, status.unixPath());
         if (!exitCode) {
             return {PickerStatus::Unavailable, {}, L"Wine could not launch /bin/sh"};
         }

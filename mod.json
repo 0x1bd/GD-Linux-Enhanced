@@ -5,7 +5,7 @@
 	},
 	"id": "kvxd.gd-linux-enhanced",
 	"name": "GD Linux Enhanced",
-	"version": "v1.0.0",
+	"version": "v1.0.1",
 	"developer": "kvxd",
 	"description": "Fixes several issues when playing GD on linux",
     "links": {
