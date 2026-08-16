@@ -14,6 +14,8 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
+target_link_libraries(${PROJECT_NAME} ole32 shell32)
+
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Unable to find Geode SDK! Please define GEODE_SDK environment variable to point to Geode")
 else()

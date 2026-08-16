@@ -5,7 +5,7 @@ Fixes several issues when playing GD on linux.
 
 ## Features
 - Fixes buggy fullscreen and windowing behaviour
-- File picker uses `zenity` instead of `explorer.exe` through proton
+- File picker uses `zenity` or `kdialog` instead of `explorer.exe` through Proton
 
 ## Build instructions (for developers)
 For more info, see [geode docs](https://docs.geode-sdk.org/getting-started/create-mod#build)

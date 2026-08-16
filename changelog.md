@@ -1,2 +1,2 @@
 # 1.0.0
-- Initial mod; no changelog yet.
+- Replace Wine's file picker with Zenity or KDialog, with a safe Wine fallback.

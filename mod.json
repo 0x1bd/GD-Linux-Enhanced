@@ -1,17 +1,11 @@
 {
 	"geode": "5.7.1",
 	"gd": {
-		"win": "2.2081",
-		"android": "2.2081",
-		"mac": "2.2081",
-		"ios": "2.2081"
+		"win": "2.2081"
 	},
 	"id": "kvxd.gd-linux-enhancement",
 	"name": "GD Linux Enhancement",
 	"version": "v1.0.0",
 	"developer": "kvxd",
-	"description": "Fixes several issues when playing GD on linux",
-	"dependencies": {
-		"geode.node-ids": ">=v1.23.3"
-	}
+	"description": "Fixes several issues when playing GD on linux"
 }
