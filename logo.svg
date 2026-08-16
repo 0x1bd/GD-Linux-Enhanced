@@ -4,14 +4,6 @@
             <stop offset="0" stop-color="#46307A"/>
             <stop offset="1" stop-color="#241A4A"/>
         </linearGradient>
-        <linearGradient id="bodyG" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#3A3E52"/>
-            <stop offset="1" stop-color="#23263A"/>
-        </linearGradient>
-        <linearGradient id="orangeG" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#FFB84D"/>
-            <stop offset="1" stop-color="#F28C0F"/>
-        </linearGradient>
         <clipPath id="badgeClip">
             <rect x="18" y="18" width="300" height="300" rx="66"/>
         </clipPath>
@@ -24,36 +16,35 @@
         <path d="M18 318 L318 318 L318 264 C 230 296 110 296 18 264 Z" fill="#000000" opacity="0.18"/>
     </g>
 
-    <g transform="translate(0,190) scale(1,1.09) translate(0,-190)">
-        <ellipse cx="130" cy="272" rx="30" ry="17" fill="#150F26"/>
-        <ellipse cx="206" cy="272" rx="30" ry="17" fill="#150F26"/>
-        <ellipse cx="130" cy="270" rx="23" ry="11" fill="url(#orangeG)"/>
-        <ellipse cx="206" cy="270" rx="23" ry="11" fill="url(#orangeG)"/>
+    <g transform="translate(0,-11)">
+        <ellipse cx="134" cy="278" rx="31" ry="17" fill="#150F26"/>
+        <ellipse cx="202" cy="278" rx="31" ry="17" fill="#150F26"/>
+        <ellipse cx="134" cy="276" rx="24" ry="11" fill="#FFA02E"/>
+        <ellipse cx="202" cy="276" rx="24" ry="11" fill="#FFA02E"/>
 
-        <path d="M130 142 C 96 148 74 190 80 230 C 82 246 98 250 108 240 C 124 224 132 186 138 158 Z"
-              fill="#23263A" stroke="#150F26" stroke-width="11" stroke-linejoin="round"/>
+        <path d="M204 148 C 246 158 272 192 268 224 C 265 244 250 250 240 238 C 224 220 210 188 202 162 Z"
+              fill="#2C3044" stroke="#150F26" stroke-width="11" stroke-linejoin="round"/>
+
         <g transform="translate(336,0) scale(-1,1)">
-            <path d="M130 142 C 96 148 74 190 80 230 C 82 246 98 250 108 240 C 124 224 132 186 138 158 Z"
-                  fill="#23263A" stroke="#150F26" stroke-width="11" stroke-linejoin="round"/>
+            <path d="M204 148 C 246 158 272 192 268 224 C 265 244 250 250 240 238 C 224 220 210 188 202 162 Z"
+                  fill="#2C3044" stroke="#150F26" stroke-width="11" stroke-linejoin="round"/>
         </g>
 
-        <path d="M168 96 C 118 96 92 138 92 192 C 92 244 122 276 168 276 C 214 276 244 244 244 192 C 244 138 218 96 168 96 Z"
-              fill="url(#bodyG)" stroke="#150F26" stroke-width="12"/>
-        <path d="M120 128 C 132 108 204 108 216 128 C 204 118 132 118 120 128 Z" fill="#FFFFFF" opacity="0.22"/>
+        <path d="M168 90 C 116 90 90 138 88 194 C 86 250 122 282 168 282 C 214 282 250 250 248 194 C 246 138 220 90 168 90 Z"
+              fill="#2C3044" stroke="#150F26" stroke-width="12"/>
 
-        <path d="M168 158 C 136 158 116 184 116 216 C 116 248 138 268 168 268 C 198 268 220 248 220 216 C 220 184 200 158 168 158 Z"
+        <path d="M168 156 C 134 156 114 184 114 218 C 114 252 138 272 168 272 C 198 272 222 252 222 218 C 222 184 202 156 168 156 Z"
               fill="#FFFFFF"/>
-        <path d="M168 158 C 136 158 116 184 116 216 C 116 224 117 231 119 238 C 128 214 146 200 168 200 C 190 200 208 214 217 238 C 219 231 220 224 220 216 C 220 184 200 158 168 158 Z"
-              fill="#E9E4F2" opacity="0.6"/>
+        <path d="M124 234 C 134 256 150 268 168 268 C 188 268 206 256 214 238 C 203 251 188 258 168 258 C 148 258 134 248 124 234 Z"
+              fill="#D9D0E6"/>
 
-        <circle cx="146" cy="140" r="17" fill="#FFFFFF" stroke="#150F26" stroke-width="6"/>
-        <circle cx="190" cy="140" r="17" fill="#FFFFFF" stroke="#150F26" stroke-width="6"/>
-        <circle cx="149" cy="143" r="7" fill="#150F26"/>
-        <circle cx="187" cy="143" r="7" fill="#150F26"/>
-        <circle cx="146" cy="139" r="2.6" fill="#FFFFFF"/>
-        <circle cx="184" cy="139" r="2.6" fill="#FFFFFF"/>
+        <circle cx="147" cy="138" r="18" fill="#FFFFFF" stroke="#150F26" stroke-width="6"/>
+        <circle cx="191" cy="136" r="16" fill="#FFFFFF" stroke="#150F26" stroke-width="6"/>
+        <circle cx="151" cy="141" r="7.5" fill="#150F26"/>
+        <circle cx="187" cy="139" r="7" fill="#150F26"/>
 
-        <path d="M150 160 C 156 154 180 154 186 160 C 192 166 180 178 168 178 C 156 178 144 166 150 160 Z"
-              fill="url(#orangeG)" stroke="#150F26" stroke-width="7" stroke-linejoin="round"/>
+        <path d="M148 158 L188 158 C 195 158 197 164 193 169 C 186 178 176 183 168 183 C 160 183 150 178 143 169 C 139 164 141 158 148 158 Z"
+              fill="#FFA02E" stroke="#150F26" stroke-width="7" stroke-linejoin="round"/>
+        <path d="M148 170 C 156 176 180 176 188 170 C 182 179 154 179 148 170 Z" fill="#E07E10"/>
     </g>
 </svg>

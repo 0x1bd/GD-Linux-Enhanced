@@ -7,5 +7,18 @@
 	"name": "GD Linux Enhancement",
 	"version": "v1.0.0",
 	"developer": "kvxd",
-	"description": "Fixes several issues when playing GD on linux"
+	"description": "Fixes several issues when playing GD on linux",
+    "links": {
+      "source": "https://github.com/0x1bd/gd-linux-enhancement"
+    },
+    "issues": {
+      "info": "Report bugs and feature requests on GitHub",
+      "url": "https://github.com/0x1bd/gd-linux-enhancement/issues"
+    },
+    "tags": [
+      "bugfix",
+      "enhancement",
+      "utility",
+      "offline"
+    ]
 }
