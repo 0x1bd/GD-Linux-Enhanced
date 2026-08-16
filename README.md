@@ -1,23 +1,14 @@
 # GD Linux Enhancement
-This is where she makes a mod.
+Fixes several issues when playing GD on linux.
 
 <img src="logo.png" width="150" alt="the mod's logo" />
 
-*Update logo.png to change your mod's icon (please)*
+## Features
+- Fixes buggy fullscreen and windowing behaviour
+- File picker uses `zenity` instead of `explorer.exe` through proton
 
-## Getting started
-We recommend heading over to [the getting started section on our docs](https://docs.geode-sdk.org/getting-started/) for useful info on what to do next.
-
-## Build instructions
-For more info, see [our docs](https://docs.geode-sdk.org/getting-started/create-mod#build)
+## Build instructions (for developers)
+For more info, see [geode docs](https://docs.geode-sdk.org/getting-started/create-mod#build)
 ```sh
-# Assuming you have the Geode CLI set up already
 geode build
 ```
-
-# Resources
-* [Geode SDK Documentation](https://docs.geode-sdk.org/)
-* [Geode SDK Source Code](https://github.com/geode-sdk/geode/)
-* [Geode CLI](https://github.com/geode-sdk/cli)
-* [Bindings](https://github.com/geode-sdk/bindings/)
-* [Dev Tools](https://github.com/geode-sdk/DevTools)

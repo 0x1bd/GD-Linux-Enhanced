@@ -1,3 +1,5 @@
-# Template Mod
+# GD Linux Enhancement
 
-Edit about.md to change this
+Fixes several issues when playing GD on linux:
+- Fixes buggy fullscreen and windowing behaviour
+- File picker uses `zenity` instead of `explorer.exe` through proton

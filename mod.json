@@ -10,7 +10,7 @@
 	"name": "GD Linux Enhancement",
 	"version": "v1.0.0",
 	"developer": "kvxd",
-	"description": "Enhances the GD experience on linux when running under proton",
+	"description": "Fixes several issues when playing GD on linux",
 	"dependencies": {
 		"geode.node-ids": ">=v1.23.3"
 	}
