@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@ namespace gdlinux {
         bool save = false;
         bool directory = false;
         bool multiple = false;
+        std::uintptr_t ownerWindow = 0;
         std::wstring title;
         std::wstring initialPath;
         std::vector<PickerFilter> filters;

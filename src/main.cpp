@@ -1,4 +1,5 @@
 #include "NativeFileDialogHook.hpp"
+#include "NativeFolderOpenHook.hpp"
 #include "WindowFix.hpp"
 
 #include <Geode/Geode.hpp>
@@ -6,9 +7,14 @@
 using namespace geode::prelude;
 
 $execute {
-    auto result = gdlinux::installNativeFileDialogHook();
-    if (!result) {
-        log::error("Unable to install the native Linux file picker: {}", result.unwrapErr());
+    auto pickerResult = gdlinux::installNativeFileDialogHook();
+    if (!pickerResult) {
+        log::error("Unable to install the native Linux file picker: {}", pickerResult.unwrapErr());
+    }
+
+    auto folderResult = gdlinux::installNativeFolderOpenHook();
+    if (!folderResult) {
+        log::error("Unable to install the native Linux folder opener: {}", folderResult.unwrapErr());
     }
 
     auto windowResult = gdlinux::initializeWindowFix();

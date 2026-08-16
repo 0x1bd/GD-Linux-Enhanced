@@ -4,13 +4,18 @@
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCEGLView.hpp>
+#include <Geode/modify/MenuLayer.hpp>
+#include <Geode/loader/SettingV3.hpp>
 
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
+#include <mutex>
 
 using namespace geode::prelude;
 
@@ -26,6 +31,13 @@ namespace {
     constexpr std::uintptr_t kGlfwPlatformSetWindowSizeRva = 0xD7430;
 
     std::optional<RECT> g_windowedRect;
+    std::mutex g_windowedRectMutex;
+    std::atomic_uint g_nativeDialogDepth = 0;
+    std::atomic_bool g_minimizeNativeDialogs = false;
+
+    bool nativeDialogActive() {
+        return g_nativeDialogDepth.load(std::memory_order_acquire) != 0;
+    }
 
     template <class... Args>
     void suppress(Args...) {}
@@ -102,9 +114,17 @@ namespace {
 
     void rememberWindowedRect(HWND window) {
         RECT rect{};
-        if (GetWindowRect(window, &rect) && hasArea(rect)) {
-            g_windowedRect = rect;
+        if (!GetWindowRect(window, &rect) || !hasArea(rect)) {
+            return;
         }
+
+        std::lock_guard lock(g_windowedRectMutex);
+        g_windowedRect = rect;
+    }
+
+    std::optional<RECT> savedWindowedRect() {
+        std::lock_guard lock(g_windowedRectMutex);
+        return g_windowedRect;
     }
 
     void updateRenderSize(cocos2d::CCEGLView* view, HWND window) {
@@ -127,6 +147,18 @@ namespace {
         if (auto* application = cocos2d::CCApplication::get()) {
             application->m_bFullscreen = fullscreen;
         }
+    }
+
+    bool gameWantsFullscreen(cocos2d::CCEGLView* view) {
+        if (!view) {
+            return false;
+        }
+
+        auto fullscreen = view->getIsFullscreen();
+        if (auto* application = cocos2d::CCApplication::get()) {
+            fullscreen = fullscreen || application->m_bFullscreen;
+        }
+        return fullscreen;
     }
 
     void releaseWindowToManager(cocos2d::CCEGLView* view) {
@@ -160,7 +192,7 @@ namespace {
     }
 
     RECT fallbackWindowedRect() {
-        return g_windowedRect.value_or(RECT{100, 100, 1380, 820});
+        return savedWindowedRect().value_or(RECT{100, 100, 1380, 820});
     }
 
     RECT makeWindowedRect(
@@ -208,12 +240,63 @@ namespace {
         return RECT{left, top, left + outerWidth, top + outerHeight};
     }
 
+
+    bool nativeWindowIsFullscreen(HWND window) {
+        auto const style = GetWindowLongPtrW(window, GWL_STYLE);
+        if ((style & WS_POPUP) != 0 && (style & WS_CAPTION) == 0) {
+            return true;
+        }
+
+        RECT rect{};
+        auto const monitor = monitorInfoForWindow(window);
+        if (!monitor || !GetWindowRect(window, &rect)) {
+            return false;
+        }
+
+        constexpr auto tolerance = 2;
+        return
+            std::abs(rect.left - monitor->rcMonitor.left) <= tolerance &&
+            std::abs(rect.top - monitor->rcMonitor.top) <= tolerance &&
+            std::abs(rect.right - monitor->rcMonitor.right) <= tolerance &&
+            std::abs(rect.bottom - monitor->rcMonitor.bottom) <= tolerance;
+    }
+
+    void makeWindowedForNativeDialog(HWND window) {
+        auto style = GetWindowLongPtrW(window, GWL_STYLE);
+        auto extendedStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+
+        style &= ~(WS_POPUP | WS_MAXIMIZE);
+        style |= WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        extendedStyle &= ~(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_CLIENTEDGE | WS_EX_DLGMODALFRAME);
+        extendedStyle |= WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+
+        auto const target = savedWindowedRect().value_or(
+            makeWindowedRect(window, style, extendedStyle, 1280, 720)
+        );
+
+        SetWindowLongPtrW(window, GWL_STYLE, style);
+        SetWindowLongPtrW(window, GWL_EXSTYLE, extendedStyle);
+        SetWindowPos(
+            window,
+            HWND_NOTOPMOST,
+            target.left,
+            target.top,
+            target.right - target.left,
+            target.bottom - target.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+        );
+    }
+
     void applyMode(
         cocos2d::CCEGLView* view,
         bool fullscreen,
         int requestedWidth = 0,
         int requestedHeight = 0
     ) {
+        if (nativeDialogActive()) {
+            return;
+        }
+
         auto const window = getNativeWindow(view);
         if (!window) {
             log::warn("Unable to apply Geometry Dash window mode: native window not found");
@@ -245,8 +328,9 @@ namespace {
             style |= WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             extendedStyle |= WS_EX_WINDOWEDGE;
 
-            if (requestedWidth <= 0 && requestedHeight <= 0 && g_windowedRect) {
-                target = *g_windowedRect;
+            auto const savedRect = savedWindowedRect();
+            if (requestedWidth <= 0 && requestedHeight <= 0 && savedRect) {
+                target = *savedRect;
             } else {
                 target = makeWindowedRect(
                     window,
@@ -276,7 +360,30 @@ namespace {
         }
     }
 
+    void synchronizeWindowMode() {
+        if (nativeDialogActive()) {
+            return;
+        }
+
+        auto* view = cocos2d::CCEGLView::get();
+        if (!view) {
+            log::warn("Unable to synchronize window mode: CCEGLView not found");
+            return;
+        }
+
+        if (gameWantsFullscreen(view)) {
+            setModeState(view, true, view->m_bIsBorderless, view->m_bIsFix);
+            applyMode(view, true);
+        } else {
+            releaseWindowToManager(view);
+        }
+    }
+
     void resizeWindowHook(cocos2d::CCEGLView* view, int width, int height) {
+        if (nativeDialogActive()) {
+            return;
+        }
+
         if (view->getIsFullscreen()) {
             if (auto const window = getNativeWindow(view)) {
                 updateRenderSize(view, window);
@@ -375,6 +482,10 @@ class $modify(GDLinuxWindowFix, cocos2d::CCEGLView) {
             return;
         }
 
+        if (nativeDialogActive()) {
+            return;
+        }
+
         auto const fix = m_bIsFix;
         m_bIsFix = false;
         cocos2d::CCEGLView::onGLFWWindowFocus(window, focused);
@@ -384,6 +495,10 @@ class $modify(GDLinuxWindowFix, cocos2d::CCEGLView) {
     void toggleFullScreen(bool fullscreen, bool borderless, bool fix) {
         if (!gdlinux::isRunningUnderWine()) {
             cocos2d::CCEGLView::toggleFullScreen(fullscreen, borderless, fix);
+            return;
+        }
+
+        if (nativeDialogActive()) {
             return;
         }
 
@@ -398,21 +513,111 @@ class $modify(GDLinuxWindowFix, cocos2d::CCEGLView) {
     }
 };
 
+class $modify(GDLinuxMenuWindowSync, MenuLayer) {
+    bool init() {
+        if (!MenuLayer::init()) {
+            return false;
+        }
+
+        if (gdlinux::isRunningUnderWine()) {
+            queueInMainThread([] {
+                synchronizeWindowMode();
+            });
+        }
+        return true;
+    }
+};
+
 namespace gdlinux {
+    NativeDialogWindowGuard::NativeDialogWindowGuard(std::uintptr_t preferredWindow) {
+        if (!isRunningUnderWine()) {
+            return;
+        }
+
+        auto window = reinterpret_cast<HWND>(preferredWindow);
+        if (!window || !IsWindow(window)) {
+            window = findProcessWindow();
+        }
+        if (!window || !IsWindowVisible(window)) {
+            return;
+        }
+
+        m_window = reinterpret_cast<std::uintptr_t>(window);
+        m_active = true;
+
+        auto const previousDepth = g_nativeDialogDepth.fetch_add(1, std::memory_order_acq_rel);
+        if (previousDepth != 0) {
+            return;
+        }
+
+        m_restoreFullscreen = nativeWindowIsFullscreen(window);
+
+        if (g_minimizeNativeDialogs.load(std::memory_order_acquire)) {
+            if (m_restoreFullscreen) {
+                makeWindowedForNativeDialog(window);
+            }
+            ShowWindow(window, SW_MINIMIZE);
+            m_minimized = true;
+            return;
+        }
+
+        if (m_restoreFullscreen) {
+            makeWindowedForNativeDialog(window);
+        }
+    }
+
+    NativeDialogWindowGuard::~NativeDialogWindowGuard() {
+        if (!m_active) {
+            return;
+        }
+
+        auto const previousDepth = g_nativeDialogDepth.fetch_sub(1, std::memory_order_acq_rel);
+        if (previousDepth > 1) {
+            return;
+        }
+
+        auto const windowHandle = m_window;
+        auto const restoreFullscreen = m_restoreFullscreen;
+        auto const minimized = m_minimized;
+        queueInMainThread([windowHandle, restoreFullscreen, minimized] {
+            auto const window = reinterpret_cast<HWND>(windowHandle);
+            if (!window || !IsWindow(window)) {
+                return;
+            }
+
+            if (minimized && IsIconic(window)) {
+                ShowWindow(window, SW_RESTORE);
+            }
+
+            if (restoreFullscreen) {
+                synchronizeWindowMode();
+            } else if (auto* view = cocos2d::CCEGLView::get()) {
+                if (!gameWantsFullscreen(view)) {
+                    releaseWindowToManager(view);
+                }
+            }
+
+            SetForegroundWindow(window);
+        });
+    }
+
     Result<> initializeWindowFix() {
         if (!isRunningUnderWine()) {
             return Ok();
         }
 
+        g_minimizeNativeDialogs.store(
+            Mod::get()->getSettingValue<bool>("minimize-native-dialogs"),
+            std::memory_order_release
+        );
+        listenForSettingChanges<bool>("minimize-native-dialogs", [](bool value) {
+            g_minimizeNativeDialogs.store(value, std::memory_order_release);
+        });
+
         GEODE_UNWRAP(installCocosWindowHooks());
 
         queueInMainThread([] {
-            auto* view = cocos2d::CCEGLView::get();
-            if (!view) {
-                log::warn("Unable to initialize Wine window integration: CCEGLView not found");
-                return;
-            }
-            releaseWindowToManager(view);
+            synchronizeWindowMode();
         });
 
         return Ok();

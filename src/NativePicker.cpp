@@ -1,5 +1,7 @@
 #include "NativePicker.hpp"
 
+#include "NativeShell.hpp"
+#include "WindowFix.hpp"
 #include "Wine.hpp"
 
 #include <Geode/Geode.hpp>
@@ -9,7 +11,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
-#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -94,57 +95,12 @@ namespace {
         return quoted;
     }
 
-    std::wstring windowsPathToUnix(std::wstring path) {
-        if (path.size() >= 2 && (path[0] == L'Z' || path[0] == L'z') && path[1] == L':') {
-            path.erase(0, 2);
-            std::ranges::replace(path, L'\\', L'/');
-            return path.empty() ? L"/" : path;
-        }
-
-        if (path.size() >= 2 && path[1] == L':') {
-            wchar_t prefix[32768]{};
-            auto const prefixLength = GetEnvironmentVariableW(
-                L"WINEPREFIX",
-                prefix,
-                static_cast<DWORD>(std::size(prefix))
-            );
-            if (prefixLength == 0 || prefixLength >= std::size(prefix)) {
-                return {};
-            }
-
-            std::wstring unixPath(prefix, prefixLength);
-            std::ranges::replace(unixPath, L'\\', L'/');
-            if (!unixPath.empty() && unixPath.back() == L'/') {
-                unixPath.pop_back();
-            }
-
-            unixPath += L"/dosdevices/";
-            unixPath += static_cast<wchar_t>(std::towlower(path[0]));
-            unixPath += L":";
-
-            auto tail = path.substr(2);
-            std::ranges::replace(tail, L'\\', L'/');
-            unixPath += tail;
-            return unixPath;
-        }
-
-        return {};
-    }
-
-    std::wstring unixPathToWindows(std::wstring path) {
-        if (path.empty() || path.front() != L'/') {
-            return {};
-        }
-        std::ranges::replace(path, L'/', L'\\');
-        return L"Z:" + path;
-    }
-
     std::wstring pickerInitialPath(std::wstring path) {
         if (path.empty()) {
             return {};
         }
 
-        auto unixPath = windowsPathToUnix(path);
+        auto unixPath = gdlinux::windowsPathToUnix(path);
         if (!unixPath.empty()) {
             return unixPath;
         }
@@ -157,7 +113,7 @@ namespace {
     }
 
     std::optional<std::string> readFile(std::wstring const& unixPath) {
-        auto const windowsPath = unixPathToWindows(unixPath);
+        auto const windowsPath = gdlinux::unixPathToWindows(unixPath);
         if (windowsPath.empty()) {
             return std::nullopt;
         }
@@ -184,7 +140,7 @@ namespace {
     public:
         TemporaryOutputFile()
           : m_unixPath(makeOutputPath()),
-            m_windowsPath(unixPathToWindows(m_unixPath)) {}
+            m_windowsPath(gdlinux::unixPathToWindows(m_unixPath)) {}
 
         ~TemporaryOutputFile() {
             if (!m_windowsPath.empty()) {
@@ -341,7 +297,7 @@ namespace {
             auto const end = wide.find(L'\n', start);
             auto line = trimLineEndings(wide.substr(start, end - start));
             if (!line.empty()) {
-                auto windowsPath = unixPathToWindows(line);
+                auto windowsPath = gdlinux::unixPathToWindows(line);
                 if (!windowsPath.empty()) {
                     paths.push_back(std::move(windowsPath));
                 }
@@ -386,6 +342,7 @@ namespace gdlinux {
         command += L" > " + shellQuote(output.unixPath());
         command += L"; printf '%d\n' $? > " + shellQuote(status.unixPath());
 
+        NativeDialogWindowGuard windowGuard(request.ownerWindow);
         auto const exitCode = runShellCommand(command, status.unixPath());
         if (!exitCode) {
             return {PickerStatus::Unavailable, {}, L"Wine could not launch /bin/sh"};

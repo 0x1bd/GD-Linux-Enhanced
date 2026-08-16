@@ -9,6 +9,7 @@
 #include <shobjidl.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -167,7 +168,9 @@ namespace {
             m_usedNativePicker = false;
             m_paths.clear();
 
-            auto response = gdlinux::showNativePicker(makePickerRequest());
+            auto request = makePickerRequest();
+            request.ownerWindow = reinterpret_cast<std::uintptr_t>(owner);
+            auto response = gdlinux::showNativePicker(request);
             switch (response.status) {
                 case gdlinux::PickerStatus::Selected:
                     m_usedNativePicker = true;
