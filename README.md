@@ -1,4 +1,4 @@
-# GD Linux Enhancement
+# GD Linux Enhanced
 Fixes several issues when playing GD on linux.
 
 <img src="logo.png" width="150" alt="the mod's logo" />

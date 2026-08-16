@@ -1,4 +1,4 @@
-# GD Linux Enhancement
+# GD Linux Enhanced
 
 Fixes several issues when playing GD on linux:
 - Fixes buggy fullscreen and windowing behavior
