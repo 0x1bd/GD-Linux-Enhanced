@@ -8,13 +8,16 @@
 #include <shobjidl.h>
 
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <vector>
 
 using namespace geode::prelude;
 
 namespace {
-    std::wstring shellItemPath(IShellItem* item) {
+    thread_local bool g_creatingWineFallback = false;
+
+    std::wstring shellItemPath(IShellItem *item) {
         if (!item) {
             return {};
         }
@@ -27,7 +30,7 @@ namespace {
         return result;
     }
 
-    HRESULT shellItemForPath(std::wstring const& path, IShellItem** result) {
+    HRESULT shellItemForPath(std::wstring const &path, IShellItem **result) {
         if (!result) {
             return E_POINTER;
         }
@@ -36,8 +39,8 @@ namespace {
     }
 
     HRESULT shellItemArrayForPaths(
-        std::vector<std::wstring> const& paths,
-        IShellItemArray** result
+        std::vector<std::wstring> const &paths,
+        IShellItemArray **result
     ) {
         if (!result) {
             return E_POINTER;
@@ -49,11 +52,11 @@ namespace {
 
         std::vector<PCIDLIST_ABSOLUTE> itemIds;
         itemIds.reserve(paths.size());
-        for (auto const& path : paths) {
+        for (auto const &path: paths) {
             PIDLIST_ABSOLUTE itemId = nullptr;
             auto status = SHParseDisplayName(path.c_str(), nullptr, &itemId, 0, nullptr);
             if (FAILED(status)) {
-                for (auto id : itemIds) {
+                for (auto id: itemIds) {
                     CoTaskMemFree(const_cast<PIDLIST_ABSOLUTE>(id));
                 }
                 return status;
@@ -64,28 +67,34 @@ namespace {
         auto status = SHCreateShellItemArrayFromIDLists(
             static_cast<UINT>(itemIds.size()), itemIds.data(), result
         );
-        for (auto id : itemIds) {
+        for (auto id: itemIds) {
             CoTaskMemFree(const_cast<PIDLIST_ABSOLUTE>(id));
         }
         return status;
     }
 
-    template <class Interface>
+    template<class Interface>
     class FileDialogProxy : public Interface {
     public:
-        explicit FileDialogProxy(Interface* inner, bool save)
-          : m_inner(inner), m_save(save) {}
+        explicit FileDialogProxy(bool save)
+            : m_save(save),
+              m_options(
+                  FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR |
+                  (save ? FOS_OVERWRITEPROMPT : FOS_FILEMUSTEXIST)
+              ) {
+        }
 
-        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **object) override {
             if (!object) {
                 return E_POINTER;
             }
             if (iid == IID_IUnknown || iid == IID_IFileDialog || iid == interfaceId()) {
-                *object = static_cast<Interface*>(this);
+                *object = static_cast<Interface *>(this);
                 AddRef();
                 return S_OK;
             }
-            return m_inner->QueryInterface(iid, object);
+            *object = nullptr;
+            return E_NOINTERFACE;
         }
 
         ULONG STDMETHODCALLTYPE AddRef() override {
@@ -113,11 +122,8 @@ namespace {
             }
             request.filters = m_filters;
 
-            FILEOPENDIALOGOPTIONS options = 0;
-            if (SUCCEEDED(m_inner->GetOptions(&options))) {
-                request.directory = options & FOS_PICKFOLDERS;
-                request.multiple = options & FOS_ALLOWMULTISELECT;
-            }
+            request.directory = m_options & FOS_PICKFOLDERS;
+            request.multiple = m_options & FOS_ALLOWMULTISELECT;
 
             auto response = gdlinux::showNativePicker(request);
             m_nativeResult = response.status != gdlinux::PickerStatus::Unavailable;
@@ -135,17 +141,17 @@ namespace {
                         string::wideToUtf8(response.error)
                     );
                     m_nativeResult = false;
-                    return m_inner->Show(owner);
+                    return showWineFallback(owner);
                 case gdlinux::PickerStatus::Unavailable:
                     m_nativeResult = false;
-                    return m_inner->Show(owner);
+                    return showWineFallback(owner);
             }
             return E_UNEXPECTED;
         }
 
         HRESULT STDMETHODCALLTYPE SetFileTypes(
             UINT count,
-            COMDLG_FILTERSPEC const* filters
+            COMDLG_FILTERSPEC const *filters
         ) override {
             m_filters.clear();
             if (filters) {
@@ -156,76 +162,105 @@ namespace {
                     });
                 }
             }
-            return m_inner->SetFileTypes(count, filters);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE SetFileTypeIndex(UINT index) override {
-            return m_inner->SetFileTypeIndex(index);
+            m_fileTypeIndex = index;
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE GetFileTypeIndex(UINT* index) override {
-            return m_inner->GetFileTypeIndex(index);
+        HRESULT STDMETHODCALLTYPE GetFileTypeIndex(UINT *index) override {
+            if (!index) {
+                return E_POINTER;
+            }
+            *index = m_fileTypeIndex;
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE Advise(IFileDialogEvents* events, DWORD* cookie) override {
-            return m_inner->Advise(events, cookie);
+        HRESULT STDMETHODCALLTYPE Advise(IFileDialogEvents *events, DWORD *cookie) override {
+            return E_NOTIMPL;
         }
 
         HRESULT STDMETHODCALLTYPE Unadvise(DWORD cookie) override {
-            return m_inner->Unadvise(cookie);
+            return E_NOTIMPL;
         }
 
         HRESULT STDMETHODCALLTYPE SetOptions(FILEOPENDIALOGOPTIONS options) override {
-            return m_inner->SetOptions(options);
+            m_options = options;
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE GetOptions(FILEOPENDIALOGOPTIONS* options) override {
-            return m_inner->GetOptions(options);
+        HRESULT STDMETHODCALLTYPE GetOptions(FILEOPENDIALOGOPTIONS *options) override {
+            if (!options) {
+                return E_POINTER;
+            }
+            *options = m_options;
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE SetDefaultFolder(IShellItem* folder) override {
+        HRESULT STDMETHODCALLTYPE SetDefaultFolder(IShellItem *folder) override {
             rememberFolder(folder);
-            return m_inner->SetDefaultFolder(folder);
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE SetFolder(IShellItem* folder) override {
+        HRESULT STDMETHODCALLTYPE SetFolder(IShellItem *folder) override {
             rememberFolder(folder);
-            return m_inner->SetFolder(folder);
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE GetFolder(IShellItem** folder) override {
-            return m_inner->GetFolder(folder);
+        HRESULT STDMETHODCALLTYPE GetFolder(IShellItem **folder) override {
+            if (!folder) {
+                return E_POINTER;
+            }
+            if (m_folder.empty()) {
+                *folder = nullptr;
+                return E_FAIL;
+            }
+            return shellItemForPath(m_folder, folder);
         }
 
-        HRESULT STDMETHODCALLTYPE GetCurrentSelection(IShellItem** selection) override {
-            return m_inner->GetCurrentSelection(selection);
+        HRESULT STDMETHODCALLTYPE GetCurrentSelection(IShellItem **selection) override {
+            if (m_nativeResult && !m_paths.empty()) {
+                return shellItemForPath(m_paths.front(), selection);
+            }
+            return GetFolder(selection);
         }
 
         HRESULT STDMETHODCALLTYPE SetFileName(LPCWSTR name) override {
             m_fileName = name ? name : L"";
-            return m_inner->SetFileName(name);
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE GetFileName(LPWSTR* name) override {
-            return m_inner->GetFileName(name);
+        HRESULT STDMETHODCALLTYPE GetFileName(LPWSTR *name) override {
+            if (!name) {
+                return E_POINTER;
+            }
+            auto bytes = (m_fileName.size() + 1) * sizeof(wchar_t);
+            *name = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
+            if (!*name) {
+                return E_OUTOFMEMORY;
+            }
+            std::memcpy(*name, m_fileName.c_str(), bytes);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE SetTitle(LPCWSTR title) override {
             m_title = title ? title : L"";
-            return m_inner->SetTitle(title);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE SetOkButtonLabel(LPCWSTR text) override {
-            return m_inner->SetOkButtonLabel(text);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE SetFileNameLabel(LPCWSTR label) override {
-            return m_inner->SetFileNameLabel(label);
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE GetResult(IShellItem** item) override {
+        HRESULT STDMETHODCALLTYPE GetResult(IShellItem **item) override {
             if (!m_nativeResult) {
-                return m_inner->GetResult(item);
+                return m_inner ? m_inner->GetResult(item) : E_UNEXPECTED;
             }
             if (m_paths.empty()) {
                 return E_FAIL;
@@ -233,44 +268,99 @@ namespace {
             return shellItemForPath(m_paths.front(), item);
         }
 
-        HRESULT STDMETHODCALLTYPE AddPlace(IShellItem* item, FDAP placement) override {
-            return m_inner->AddPlace(item, placement);
+        HRESULT STDMETHODCALLTYPE AddPlace(IShellItem *item, FDAP placement) override {
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE SetDefaultExtension(LPCWSTR extension) override {
             m_defaultExtension = extension ? extension : L"";
-            return m_inner->SetDefaultExtension(extension);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE Close(HRESULT status) override {
-            return m_inner->Close(status);
+            return E_NOTIMPL;
         }
 
         HRESULT STDMETHODCALLTYPE SetClientGuid(REFGUID guid) override {
-            return m_inner->SetClientGuid(guid);
+            return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE ClearClientData() override {
-            return m_inner->ClearClientData();
+            return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE SetFilter(IShellItemFilter* filter) override {
-            return m_inner->SetFilter(filter);
+        HRESULT STDMETHODCALLTYPE SetFilter(IShellItemFilter *filter) override {
+            return E_NOTIMPL;
         }
 
     protected:
         virtual ~FileDialogProxy() {
-            m_inner->Release();
+            if (m_inner) {
+                m_inner->Release();
+            }
         }
 
-        virtual IID const& interfaceId() const = 0;
+        virtual IID const &interfaceId() const = 0;
 
-        Interface* m_inner;
+        Interface *m_inner = nullptr;
         bool m_nativeResult = false;
         std::vector<std::wstring> m_paths;
 
     private:
-        void rememberFolder(IShellItem* folder) {
+        HRESULT showWineFallback(HWND owner) {
+            auto status = createWineFallback();
+            if (FAILED(status)) {
+                return status;
+            }
+            return m_inner->Show(owner);
+        }
+
+        HRESULT createWineFallback() {
+            if (m_inner) {
+                return S_OK;
+            }
+
+            g_creatingWineFallback = true;
+            auto classId = m_save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
+            auto status = CoCreateInstance(
+                classId, nullptr, CLSCTX_ALL, interfaceId(),
+                reinterpret_cast<void **>(&m_inner)
+            );
+            g_creatingWineFallback = false;
+            if (FAILED(status)) {
+                return status;
+            }
+
+            m_inner->SetOptions(m_options);
+            if (!m_filters.empty()) {
+                std::vector<COMDLG_FILTERSPEC> filters;
+                filters.reserve(m_filters.size());
+                for (auto const &filter: m_filters) {
+                    filters.push_back({filter.name.c_str(), filter.patterns.c_str()});
+                }
+                m_inner->SetFileTypes(static_cast<UINT>(filters.size()), filters.data());
+            }
+            m_inner->SetFileTypeIndex(m_fileTypeIndex);
+            if (!m_folder.empty()) {
+                IShellItem *folder = nullptr;
+                if (SUCCEEDED(shellItemForPath(m_folder, &folder))) {
+                    m_inner->SetFolder(folder);
+                    folder->Release();
+                }
+            }
+            if (!m_fileName.empty()) {
+                m_inner->SetFileName(m_fileName.c_str());
+            }
+            if (!m_title.empty()) {
+                m_inner->SetTitle(m_title.c_str());
+            }
+            if (!m_defaultExtension.empty()) {
+                m_inner->SetDefaultExtension(m_defaultExtension.c_str());
+            }
+            return S_OK;
+        }
+
+        void rememberFolder(IShellItem *folder) {
             auto path = shellItemPath(folder);
             if (!path.empty()) {
                 m_folder = std::move(path);
@@ -288,10 +378,9 @@ namespace {
 
             auto extension = m_defaultExtension;
             if (extension.empty()) {
-                UINT selectedFilter = 1;
-                m_inner->GetFileTypeIndex(&selectedFilter);
+                auto selectedFilter = m_fileTypeIndex;
                 if (selectedFilter > 0 && selectedFilter <= m_filters.size()) {
-                    auto const& pattern = m_filters[selectedFilter - 1].patterns;
+                    auto const &pattern = m_filters[selectedFilter - 1].patterns;
                     if (pattern.starts_with(L"*.") && pattern.find_first_of(L";*?", 2) == std::wstring::npos) {
                         extension = pattern.substr(2);
                     }
@@ -306,8 +395,10 @@ namespace {
             m_paths.front() += extension;
         }
 
-        std::atomic_ulong m_references { 1 };
+        std::atomic_ulong m_references{1};
         bool m_save;
+        FILEOPENDIALOGOPTIONS m_options;
+        UINT m_fileTypeIndex = 1;
         std::wstring m_title;
         std::wstring m_folder;
         std::wstring m_fileName;
@@ -317,64 +408,64 @@ namespace {
 
     class OpenFileDialogProxy final : public FileDialogProxy<IFileOpenDialog> {
     public:
-        explicit OpenFileDialogProxy(IFileOpenDialog* inner)
-          : FileDialogProxy(inner, false) {}
+        OpenFileDialogProxy() : FileDialogProxy(false) {
+        }
 
-        HRESULT STDMETHODCALLTYPE GetResults(IShellItemArray** items) override {
+        HRESULT STDMETHODCALLTYPE GetResults(IShellItemArray **items) override {
             if (!m_nativeResult) {
-                return m_inner->GetResults(items);
+                return m_inner ? m_inner->GetResults(items) : E_UNEXPECTED;
             }
             return shellItemArrayForPaths(m_paths, items);
         }
 
-        HRESULT STDMETHODCALLTYPE GetSelectedItems(IShellItemArray** items) override {
+        HRESULT STDMETHODCALLTYPE GetSelectedItems(IShellItemArray **items) override {
             if (!m_nativeResult) {
-                return m_inner->GetSelectedItems(items);
+                return m_inner ? m_inner->GetSelectedItems(items) : E_UNEXPECTED;
             }
             return shellItemArrayForPaths(m_paths, items);
         }
 
     private:
-        IID const& interfaceId() const override {
+        IID const &interfaceId() const override {
             return IID_IFileOpenDialog;
         }
     };
 
     class SaveFileDialogProxy final : public FileDialogProxy<IFileSaveDialog> {
     public:
-        explicit SaveFileDialogProxy(IFileSaveDialog* inner)
-          : FileDialogProxy(inner, true) {}
-
-        HRESULT STDMETHODCALLTYPE SetSaveAsItem(IShellItem* item) override {
-            return m_inner->SetSaveAsItem(item);
+        SaveFileDialogProxy() : FileDialogProxy(true) {
         }
 
-        HRESULT STDMETHODCALLTYPE SetProperties(IPropertyStore* properties) override {
-            return m_inner->SetProperties(properties);
+        HRESULT STDMETHODCALLTYPE SetSaveAsItem(IShellItem *item) override {
+            return E_NOTIMPL;
+        }
+
+        HRESULT STDMETHODCALLTYPE SetProperties(IPropertyStore *properties) override {
+            return E_NOTIMPL;
         }
 
         HRESULT STDMETHODCALLTYPE SetCollectedProperties(
-            IPropertyDescriptionList* properties,
+            IPropertyDescriptionList *properties,
             BOOL appendDefault
         ) override {
-            return m_inner->SetCollectedProperties(properties, appendDefault);
+            return E_NOTIMPL;
         }
 
-        HRESULT STDMETHODCALLTYPE GetProperties(IPropertyStore** properties) override {
-            return m_inner->GetProperties(properties);
+        HRESULT STDMETHODCALLTYPE GetProperties(IPropertyStore **properties) override {
+            return E_NOTIMPL;
         }
 
         HRESULT STDMETHODCALLTYPE ApplyProperties(
-            IShellItem* item,
-            IPropertyStore* properties,
+            IShellItem *item,
+            IPropertyStore *properties,
             HWND owner,
-            IFileOperationProgressSink* sink
+            IFileOperationProgressSink *sink
         ) override {
-            return m_inner->ApplyProperties(item, properties, owner, sink);
+            return E_NOTIMPL;
         }
 
     private:
-        IID const& interfaceId() const override {
+        IID const &interfaceId() const override {
             return IID_IFileSaveDialog;
         }
     };
@@ -384,22 +475,24 @@ namespace {
         LPUNKNOWN outer,
         DWORD context,
         REFIID interfaceId,
-        LPVOID* object
+        LPVOID *object
     ) {
-        auto result = CoCreateInstance(classId, outer, context, interfaceId, object);
-        if (FAILED(result) || !object || !*object || outer) {
-            return result;
+        if (g_creatingWineFallback) {
+            return CoCreateInstance(classId, outer, context, interfaceId, object);
+        }
+        if (!object) {
+            return E_POINTER;
         }
 
-        if (classId == CLSID_FileOpenDialog && interfaceId == IID_IFileOpenDialog) {
-            auto inner = static_cast<IFileOpenDialog*>(*object);
-            *object = static_cast<IFileOpenDialog*>(new OpenFileDialogProxy(inner));
+        if (!outer && classId == CLSID_FileOpenDialog && interfaceId == IID_IFileOpenDialog) {
+            *object = static_cast<IFileOpenDialog *>(new OpenFileDialogProxy());
+            return S_OK;
         }
-        else if (classId == CLSID_FileSaveDialog && interfaceId == IID_IFileSaveDialog) {
-            auto inner = static_cast<IFileSaveDialog*>(*object);
-            *object = static_cast<IFileSaveDialog*>(new SaveFileDialogProxy(inner));
+        if (!outer && classId == CLSID_FileSaveDialog && interfaceId == IID_IFileSaveDialog) {
+            *object = static_cast<IFileSaveDialog *>(new SaveFileDialogProxy());
+            return S_OK;
         }
-        return result;
+        return CoCreateInstance(classId, outer, context, interfaceId, object);
     }
 }
 
@@ -420,7 +513,7 @@ geode::Result<> gdlinux::installNativeFileDialogHook() {
     if (!ole32) {
         return Err("Unable to load ole32.dll");
     }
-    auto address = reinterpret_cast<void*>(GetProcAddress(ole32, "CoCreateInstance"));
+    auto address = reinterpret_cast<void *>(GetProcAddress(ole32, "CoCreateInstance"));
     if (!address) {
         return Err("Unable to resolve CoCreateInstance");
     }

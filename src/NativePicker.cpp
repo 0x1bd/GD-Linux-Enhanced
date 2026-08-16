@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cwctype>
 #include <fstream>
 #include <optional>
@@ -21,6 +22,20 @@ namespace {
         bool launched = false;
         DWORD exitCode = ERROR_GEN_FAILURE;
     };
+
+    std::wstring unixPathToWindows(std::wstring path);
+
+    std::optional<std::string> readHandoffFile(std::wstring const& unixPath) {
+        auto windowsPath = unixPathToWindows(unixPath);
+        std::ifstream input(std::filesystem::path(windowsPath), std::ios::binary);
+        if (!input) {
+            return std::nullopt;
+        }
+        return std::string {
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()
+        };
+    }
 
     bool fileExists(std::wstring const& path) {
         auto attributes = GetFileAttributesW(path.c_str());
@@ -129,7 +144,10 @@ namespace {
             std::to_wstring(counter.fetch_add(1, std::memory_order_relaxed)) + L".result";
     }
 
-    ProcessResult runShellCommand(std::wstring const& command) {
+    ProcessResult runShellCommand(
+        std::wstring const& command,
+        std::wstring const& statusPath
+    ) {
         auto commandLine = L"sh -c " + windowsArgumentQuote(command);
         STARTUPINFOW startup {};
         startup.cb = sizeof(startup);
@@ -143,9 +161,19 @@ namespace {
             return {};
         }
 
-        WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exitCode = ERROR_GEN_FAILURE;
-        GetExitCodeProcess(process.hProcess, &exitCode);
+        for (;;) {
+            auto status = readHandoffFile(statusPath);
+            if (status && !status->empty()) {
+                char* end = nullptr;
+                auto parsed = std::strtoul(status->c_str(), &end, 10);
+                if (end != status->c_str()) {
+                    exitCode = static_cast<DWORD>(parsed);
+                }
+                break;
+            }
+            Sleep(50);
+        }
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         return { true, exitCode };
@@ -218,18 +246,11 @@ namespace {
     }
 
     std::vector<std::wstring> readSelectedPaths(std::wstring const& unixOutputPath) {
-        std::ifstream input(
-            std::filesystem::path(unixPathToWindows(unixOutputPath)),
-            std::ios::binary
-        );
-        if (!input) {
+        auto contents = readHandoffFile(unixOutputPath);
+        if (!contents) {
             return {};
         }
-        std::string contents {
-            std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()
-        };
-        auto wide = string::utf8ToWide(contents);
+        auto wide = string::utf8ToWide(*contents);
         std::vector<std::wstring> paths;
         std::size_t start = 0;
         while (start <= wide.size()) {
@@ -271,7 +292,9 @@ gdlinux::PickerResponse gdlinux::showNativePicker(PickerRequest const& originalR
         request.initialPath += L'/';
     }
     auto outputPath = makeOutputPath();
+    auto statusPath = makeOutputPath();
     auto windowsOutputPath = unixPathToWindows(outputPath);
+    auto windowsStatusPath = unixPathToWindows(statusPath);
     auto handle = CreateFileW(
         windowsOutputPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_TEMPORARY, nullptr
@@ -280,18 +303,29 @@ gdlinux::PickerResponse gdlinux::showNativePicker(PickerRequest const& originalR
         return { PickerStatus::Failed, {}, L"Unable to create picker result file" };
     }
     CloseHandle(handle);
+    handle = CreateFileW(
+        windowsStatusPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_TEMPORARY, nullptr
+    );
+    if (handle == INVALID_HANDLE_VALUE) {
+        DeleteFileW(windowsOutputPath.c_str());
+        return { PickerStatus::Failed, {}, L"Unable to create picker status file" };
+    }
+    CloseHandle(handle);
 
     auto command = *backend == Backend::Zenity
         ? zenityCommand(request)
         : kdialogCommand(request);
     command += L" > " + shellQuote(outputPath);
+    command += L"; echo $? > " + shellQuote(statusPath);
 
-    auto process = runShellCommand(command);
+    auto process = runShellCommand(command, statusPath);
     std::vector<std::wstring> paths;
     if (process.launched && process.exitCode == 0) {
         paths = readSelectedPaths(outputPath);
     }
     DeleteFileW(windowsOutputPath.c_str());
+    DeleteFileW(windowsStatusPath.c_str());
 
     if (!process.launched) {
         return { PickerStatus::Unavailable, {}, L"Wine could not launch /bin/sh" };
