@@ -1,6 +1,6 @@
 #include "WindowFix.hpp"
 
-#include "NativePicker.hpp"
+#include "Wine.hpp"
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCEGLView.hpp>
@@ -8,48 +8,95 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 
 using namespace geode::prelude;
 
 namespace {
-    constexpr std::uintptr_t GLFW_WINDOW_HWND_OFFSET = 0x370;
-    constexpr char MAKE_BORDERLESS_TOP_SYMBOL[] =
-            "?makeBorderlessTop@CCEGLView@cocos2d@@QEAAXXZ";
-    constexpr char RESIZE_WINDOW_SYMBOL[] =
-            "?resizeWindow@CCEGLView@cocos2d@@QEAAXHH@Z";
-    constexpr std::uintptr_t GLFW_PLATFORM_CENTER_WINDOW_RVA = 0xD6300;
-    constexpr std::uintptr_t GLFW_PLATFORM_SET_WINDOW_MONITOR_RVA = 0xD6EF0;
-    constexpr std::uintptr_t GLFW_PLATFORM_SET_WINDOW_POS_RVA = 0xD7300;
-    constexpr std::uintptr_t GLFW_PLATFORM_SET_WINDOW_SIZE_RVA = 0xD7430;
+    constexpr std::uintptr_t kGlfwWindowHwndOffset = 0x370;
+    constexpr char kMakeBorderlessTopSymbol[] =
+        "?makeBorderlessTop@CCEGLView@cocos2d@@QEAAXXZ";
+    constexpr char kResizeWindowSymbol[] =
+        "?resizeWindow@CCEGLView@cocos2d@@QEAAXHH@Z";
+    constexpr std::uintptr_t kGlfwPlatformCenterWindowRva = 0xD6300;
+    constexpr std::uintptr_t kGlfwPlatformSetWindowMonitorRva = 0xD6EF0;
+    constexpr std::uintptr_t kGlfwPlatformSetWindowPosRva = 0xD7300;
+    constexpr std::uintptr_t kGlfwPlatformSetWindowSizeRva = 0xD7430;
 
-    RECT g_windowedRect{};
-    bool g_hasWindowedRect = false;
+    std::optional<RECT> g_windowedRect;
 
     template <class... Args>
     void suppress(Args...) {}
 
-    HWND getNativeWindow(cocos2d::CCEGLView *view) {
-        if (view && view->m_pMainWindow) {
-            auto const address = reinterpret_cast<std::uintptr_t>(view->m_pMainWindow);
-            auto const window = *reinterpret_cast<HWND const *>(
-                address + GLFW_WINDOW_HWND_OFFSET
-            );
-            if (IsWindow(window)) {
+    HWND readGlfwWindowHandle(GLFWwindow* glfwWindow) {
+        if (!glfwWindow) {
+            return nullptr;
+        }
+
+        auto const address = reinterpret_cast<std::uintptr_t>(glfwWindow) + kGlfwWindowHwndOffset;
+        HWND window = nullptr;
+        SIZE_T bytesRead = 0;
+        if (!ReadProcessMemory(
+                GetCurrentProcess(),
+                reinterpret_cast<void const*>(address),
+                &window,
+                sizeof(window),
+                &bytesRead
+            ) || bytesRead != sizeof(window)) {
+            return nullptr;
+        }
+
+        return IsWindow(window) ? window : nullptr;
+    }
+
+    BOOL CALLBACK findProcessWindowCallback(HWND window, LPARAM data) {
+        DWORD processId = 0;
+        GetWindowThreadProcessId(window, &processId);
+        if (
+            processId != GetCurrentProcessId() ||
+            !IsWindowVisible(window) ||
+            GetWindow(window, GW_OWNER) != nullptr
+        ) {
+            return TRUE;
+        }
+
+        auto* result = reinterpret_cast<HWND*>(data);
+        *result = window;
+        return FALSE;
+    }
+
+    HWND findProcessWindow() {
+        HWND window = nullptr;
+        EnumWindows(&findProcessWindowCallback, reinterpret_cast<LPARAM>(&window));
+        return window;
+    }
+
+    HWND getNativeWindow(cocos2d::CCEGLView* view) {
+        if (view) {
+            if (auto const window = readGlfwWindowHandle(view->m_pMainWindow)) {
                 return window;
             }
         }
-
-        return FindWindowW(nullptr, L"Geometry Dash");
+        return findProcessWindow();
     }
 
-    bool getMonitorInfo(HWND window, MONITORINFO &info) {
-        info.cbSize = sizeof(info);
+    std::optional<MONITORINFO> monitorInfoForWindow(HWND window) {
         auto const monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-        return monitor && GetMonitorInfoW(monitor, &info);
+        if (!monitor) {
+            return std::nullopt;
+        }
+
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (!GetMonitorInfoW(monitor, &info)) {
+            return std::nullopt;
+        }
+        return info;
     }
 
-    bool hasArea(RECT const &rect) {
+    bool hasArea(RECT const& rect) {
         return rect.right > rect.left && rect.bottom > rect.top;
     }
 
@@ -57,11 +104,10 @@ namespace {
         RECT rect{};
         if (GetWindowRect(window, &rect) && hasArea(rect)) {
             g_windowedRect = rect;
-            g_hasWindowedRect = true;
         }
     }
 
-    void updateRenderSize(cocos2d::CCEGLView *view, HWND window) {
+    void updateRenderSize(cocos2d::CCEGLView* view, HWND window) {
         RECT client{};
         if (GetClientRect(window, &client) && client.right > 0 && client.bottom > 0) {
             view->updateWindow(client.right, client.bottom);
@@ -69,7 +115,7 @@ namespace {
     }
 
     void setModeState(
-        cocos2d::CCEGLView *view,
+        cocos2d::CCEGLView* view,
         bool fullscreen,
         bool borderless,
         bool fix
@@ -78,15 +124,15 @@ namespace {
         view->m_bIsBorderless = borderless;
         view->m_bIsFix = fix;
 
-        if (auto *application = cocos2d::CCApplication::get()) {
+        if (auto* application = cocos2d::CCApplication::get()) {
             application->m_bFullscreen = fullscreen;
         }
     }
 
-    void releaseWindowToManager(cocos2d::CCEGLView *view) {
+    void releaseWindowToManager(cocos2d::CCEGLView* view) {
         auto const window = getNativeWindow(view);
         if (!window) {
-            log::warn("Unable to release the GD window to the window manager");
+            log::warn("Unable to release the Geometry Dash window to the window manager");
             return;
         }
 
@@ -105,12 +151,16 @@ namespace {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
         );
 
         if (!view->getIsFullscreen()) {
             rememberWindowedRect(window);
         }
+    }
+
+    RECT fallbackWindowedRect() {
+        return g_windowedRect.value_or(RECT{100, 100, 1380, 820});
     }
 
     RECT makeWindowedRect(
@@ -120,28 +170,27 @@ namespace {
         int requestedWidth,
         int requestedHeight
     ) {
-        MONITORINFO monitor{};
-        if (!getMonitorInfo(window, monitor)) {
-            return g_hasWindowedRect ? g_windowedRect : RECT{100, 100, 1380, 820};
+        auto const monitor = monitorInfoForWindow(window);
+        if (!monitor) {
+            return fallbackWindowedRect();
         }
 
-        auto const workWidth = static_cast<int>(
-            monitor.rcWork.right - monitor.rcWork.left
-        );
-        auto const workHeight = static_cast<int>(
-            monitor.rcWork.bottom - monitor.rcWork.top
-        );
+        auto const workWidth = static_cast<int>(monitor->rcWork.right - monitor->rcWork.left);
+        auto const workHeight = static_cast<int>(monitor->rcWork.bottom - monitor->rcWork.top);
+
         auto width = requestedWidth > 0 ? requestedWidth : 1280;
         auto height = requestedHeight > 0 ? requestedHeight : 720;
 
-        auto const maxWidth = std::max(640, workWidth * 9 / 10);
-        auto const maxHeight = std::max(360, workHeight * 9 / 10);
+        auto const maxWidth = std::max(1, workWidth * 9 / 10);
+        auto const maxHeight = std::max(1, workHeight * 9 / 10);
         if (width > maxWidth || height > maxHeight) {
             auto const widthScale = static_cast<double>(maxWidth) / width;
             auto const heightScale = static_cast<double>(maxHeight) / height;
             auto const scale = std::min(widthScale, heightScale);
-            width = std::max(640, static_cast<int>(width * scale));
-            height = std::max(360, static_cast<int>(height * scale));
+            auto const minWidth = std::min(640, maxWidth);
+            auto const minHeight = std::min(360, maxHeight);
+            width = std::max(minWidth, static_cast<int>(width * scale));
+            height = std::max(minHeight, static_cast<int>(height * scale));
         }
 
         RECT rect{0, 0, width, height};
@@ -154,20 +203,20 @@ namespace {
 
         auto const outerWidth = rect.right - rect.left;
         auto const outerHeight = rect.bottom - rect.top;
-        auto const left = monitor.rcWork.left + (workWidth - outerWidth) / 2;
-        auto const top = monitor.rcWork.top + (workHeight - outerHeight) / 2;
+        auto const left = monitor->rcWork.left + (workWidth - outerWidth) / 2;
+        auto const top = monitor->rcWork.top + (workHeight - outerHeight) / 2;
         return RECT{left, top, left + outerWidth, top + outerHeight};
     }
 
     void applyMode(
-        cocos2d::CCEGLView *view,
+        cocos2d::CCEGLView* view,
         bool fullscreen,
         int requestedWidth = 0,
         int requestedHeight = 0
     ) {
         auto const window = getNativeWindow(view);
         if (!window) {
-            log::warn("Unable to apply the GD window mode: window not found");
+            log::warn("Unable to apply Geometry Dash window mode: native window not found");
             return;
         }
 
@@ -180,23 +229,24 @@ namespace {
         extendedStyle |= WS_EX_APPWINDOW;
 
         if (fullscreen) {
-            MONITORINFO monitor{};
-            if (!getMonitorInfo(window, monitor)) {
-                log::warn("Unable to apply fullscreen: monitor not found");
+            auto const monitor = monitorInfoForWindow(window);
+            if (!monitor) {
+                log::warn("Unable to enter fullscreen: monitor not found");
                 return;
             }
-            target = monitor.rcMonitor;
+
+            target = monitor->rcMonitor;
             style &= ~(WS_CAPTION | WS_MAXIMIZE);
             style |= WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS |
-                    WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
             extendedStyle &= ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_DLGMODALFRAME);
         } else {
             style &= ~(WS_POPUP | WS_MAXIMIZE);
             style |= WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
             extendedStyle |= WS_EX_WINDOWEDGE;
 
-            if (requestedWidth <= 0 && requestedHeight <= 0 && g_hasWindowedRect) {
-                target = g_windowedRect;
+            if (requestedWidth <= 0 && requestedHeight <= 0 && g_windowedRect) {
+                target = *g_windowedRect;
             } else {
                 target = makeWindowedRect(
                     window,
@@ -210,7 +260,6 @@ namespace {
 
         SetWindowLongPtrW(window, GWL_STYLE, style);
         SetWindowLongPtrW(window, GWL_EXSTYLE, extendedStyle);
-
         SetWindowPos(
             window,
             HWND_NOTOPMOST,
@@ -227,16 +276,37 @@ namespace {
         }
     }
 
-    void resizeWindowHook(cocos2d::CCEGLView *view, int width, int height) {
+    void resizeWindowHook(cocos2d::CCEGLView* view, int width, int height) {
         if (view->getIsFullscreen()) {
-            auto const window = getNativeWindow(view);
-            if (window) {
+            if (auto const window = getNativeWindow(view)) {
                 updateRenderSize(view, window);
             }
             return;
         }
-
         applyMode(view, false, width, height);
+    }
+
+    bool rvaIsInsideModule(HMODULE module, std::uintptr_t rva) {
+        auto const* base = reinterpret_cast<std::byte const*>(module);
+        auto const* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER const*>(base);
+        if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+            return false;
+        }
+
+        auto const* ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS const*>(
+            base + dosHeader->e_lfanew
+        );
+        if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
+            return false;
+        }
+        return rva < ntHeaders->OptionalHeader.SizeOfImage;
+    }
+
+    void* addressAtRva(HMODULE module, std::uintptr_t rva) {
+        if (!rvaIsInsideModule(module, rva)) {
+            return nullptr;
+        }
+        return reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(module) + rva);
     }
 
     Result<> installCocosWindowHooks() {
@@ -246,19 +316,27 @@ namespace {
             return Err("Unable to locate libcocos2d.dll");
         }
 
-        auto const borderlessTop = reinterpret_cast<void *>(
-            GetProcAddress(cocos, MAKE_BORDERLESS_TOP_SYMBOL)
+        auto* borderlessTop = reinterpret_cast<void*>(
+            GetProcAddress(cocos, kMakeBorderlessTopSymbol)
         );
-        auto const resizeWindow = reinterpret_cast<void *>(
-            GetProcAddress(cocos, RESIZE_WINDOW_SYMBOL)
+        auto* resizeWindow = reinterpret_cast<void*>(
+            GetProcAddress(cocos, kResizeWindowSymbol)
         );
+        auto* centerWindow = addressAtRva(cocos, kGlfwPlatformCenterWindowRva);
+        auto* setWindowMonitor = addressAtRva(cocos, kGlfwPlatformSetWindowMonitorRva);
+        auto* setWindowPos = addressAtRva(cocos, kGlfwPlatformSetWindowPosRva);
+        auto* setWindowSize = addressAtRva(cocos, kGlfwPlatformSetWindowSizeRva);
+
         if (!borderlessTop || !resizeWindow) {
             return Err("Unable to resolve Cocos window-management functions");
+        }
+        if (!centerWindow || !setWindowMonitor || !setWindowPos || !setWindowSize) {
+            return Err("Cocos window hook offsets do not match the loaded module");
         }
 
         GEODE_UNWRAP(Mod::get()->hook(
             borderlessTop,
-            &suppress<cocos2d::CCEGLView *>,
+            &suppress<cocos2d::CCEGLView*>,
             "Suppress Cocos topmost enforcement"
         ));
         GEODE_UNWRAP(Mod::get()->hook(
@@ -267,23 +345,23 @@ namespace {
             "Replace Cocos window resizing"
         ));
         GEODE_UNWRAP(Mod::get()->hook(
-            reinterpret_cast<void *>(cocosBase + GLFW_PLATFORM_CENTER_WINDOW_RVA),
-            &suppress<GLFWwindow *>,
+            centerWindow,
+            &suppress<GLFWwindow*>,
             "Suppress GLFW native window centering"
         ));
         GEODE_UNWRAP(Mod::get()->hook(
-            reinterpret_cast<void *>(cocosBase + GLFW_PLATFORM_SET_WINDOW_MONITOR_RVA),
-            &suppress<GLFWwindow *, GLFWmonitor *, int, int, int, int>,
+            setWindowMonitor,
+            &suppress<GLFWwindow*, GLFWmonitor*, int, int, int, int>,
             "Suppress GLFW monitor ownership"
         ));
         GEODE_UNWRAP(Mod::get()->hook(
-            reinterpret_cast<void *>(cocosBase + GLFW_PLATFORM_SET_WINDOW_POS_RVA),
-            &suppress<GLFWwindow *, int, int>,
+            setWindowPos,
+            &suppress<GLFWwindow*, int, int>,
             "Suppress GLFW native window positioning"
         ));
         GEODE_UNWRAP(Mod::get()->hook(
-            reinterpret_cast<void *>(cocosBase + GLFW_PLATFORM_SET_WINDOW_SIZE_RVA),
-            &suppress<GLFWwindow *, int, int>,
+            setWindowSize,
+            &suppress<GLFWwindow*, int, int>,
             "Suppress GLFW native window sizing"
         ));
         return Ok();
@@ -291,16 +369,16 @@ namespace {
 }
 
 class $modify(GDLinuxWindowFix, cocos2d::CCEGLView) {
-    void onGLFWWindowFocus(GLFWwindow *window, int focused) {
+    void onGLFWWindowFocus(GLFWwindow* window, int focused) {
         if (!gdlinux::isRunningUnderWine()) {
             cocos2d::CCEGLView::onGLFWWindowFocus(window, focused);
             return;
         }
 
-        auto const fix = this->m_bIsFix;
-        this->m_bIsFix = false;
+        auto const fix = m_bIsFix;
+        m_bIsFix = false;
         cocos2d::CCEGLView::onGLFWWindowFocus(window, focused);
-        this->m_bIsFix = fix;
+        m_bIsFix = fix;
     }
 
     void toggleFullScreen(bool fullscreen, bool borderless, bool fix) {
@@ -309,31 +387,34 @@ class $modify(GDLinuxWindowFix, cocos2d::CCEGLView) {
             return;
         }
 
-        if (fullscreen && !this->getIsFullscreen()) {
+        if (fullscreen && !getIsFullscreen()) {
             if (auto const window = getNativeWindow(this)) {
                 rememberWindowedRect(window);
             }
         }
+
         setModeState(this, fullscreen, borderless, fix);
         applyMode(this, fullscreen);
     }
 };
 
-Result<> gdlinux::initializeWindowFix() {
-    if (!isRunningUnderWine()) {
-        return Ok();
-    }
-
-    GEODE_UNWRAP(installCocosWindowHooks());
-
-    queueInMainThread([] {
-        auto *view = cocos2d::CCEGLView::get();
-        if (!view) {
-            log::warn("Unable to initialize Wine window integration: CCEGLView not found");
-            return;
+namespace gdlinux {
+    Result<> initializeWindowFix() {
+        if (!isRunningUnderWine()) {
+            return Ok();
         }
 
-        releaseWindowToManager(view);
-    });
-    return Ok();
+        GEODE_UNWRAP(installCocosWindowHooks());
+
+        queueInMainThread([] {
+            auto* view = cocos2d::CCEGLView::get();
+            if (!view) {
+                log::warn("Unable to initialize Wine window integration: CCEGLView not found");
+                return;
+            }
+            releaseWindowToManager(view);
+        });
+
+        return Ok();
+    }
 }

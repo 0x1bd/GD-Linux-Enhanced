@@ -1,7 +1,5 @@
 #pragma once
 
-#include <windows.h>
-
 #include <string>
 #include <vector>
 
@@ -33,7 +31,6 @@ namespace gdlinux {
         std::wstring error;
     };
 
-    bool isRunningUnderWine();
-    bool hasNativePicker();
-    PickerResponse showNativePicker(PickerRequest const& request);
+    [[nodiscard]] bool hasNativePicker();
+    [[nodiscard]] PickerResponse showNativePicker(PickerRequest const& request);
 }
